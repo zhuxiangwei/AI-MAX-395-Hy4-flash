@@ -129,6 +129,8 @@ metrics：`requests_reused=1, reused_tokens=18996`。
 ### 6.1 启动方式
 CLI `strata launch` **不可用**：① 不透传 `HY4_KV_HOST` → 256k OOM ② 触发引擎更新检查。必须 serve + config。
 
+> ⚠️ **config 必备字段 `api_key`（2026-11-25 教训）**：生产 config `hy4-256k-067-convcache.json` 必须带 `api_key`（与 llamacpp 的 `--api-key` 同一个 token，本仓库不存明文）。缺此项时 Strata 的 DNS rebinding 防护会对云端域名返回 `403 Host 'dashenzhiyan.com' is not allowed`，公网端点全挂；设了 `api_key` 会同时关闭该 host 检查。11-24 换 config 时漏带 → WorkBuddy/OpenCode 经公网全部 403，补回重启后恢复。**换 config 时逐项核对 `api_key`**；本机无 key 401 / 有 key 200 是验收基线。
+
 **strata.service（已固化，qie_ai strata 直接管理）**：
 ```
 WorkingDirectory=/home/zxw/Strata/terminal
