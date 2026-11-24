@@ -1,0 +1,20 @@
+/home/zxw/logs/strata/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+    delaycompress
+}
+
+# hy4flash 引擎全量日志（config 里的 log 字段，不在 ~/logs/strata/ 下）
+/home/zxw/.local/state/strata/launch/*.engine.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+    delaycompress
+}

@@ -1,0 +1,8 @@
+# 私钥/令牌不入库
+*.key
+*.token
+client.env
+# 运行时
+convcache/
+*.log
+__pycache__/
