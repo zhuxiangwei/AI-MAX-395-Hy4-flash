@@ -189,8 +189,8 @@ serve 层传旧 Flash-Next 名直接 `model_not_found`；必须传 **`hy4-flash-
 | 客户端 | 配置位置 | 状态 |
 |---|---|---|
 | **opencode**（WSL，v1.19.6） | `~/.config/opencode/opencode.jsonc` | 模型 `local-llm/hy4-flash-sq-128`，`limit.context 327680`；默认仍 27B，需手动切 |
-| **WorkBuddy**（Windows 桌面） | `~/.workbuddy/models.json` | 条目 `hy4-flash-sq-128`，声明 tool call/images/reasoning；context 仍 262144（未同步 320k） |
-| **AutoClaw2**（Windows 桌面） | `AppData/Roaming/AutoClaw-official/accounts/<id>/runtime/runtime.sqlite` | 自定义连接已改 hy4-flash-sq-128，但 `active=0`，默认走官方 `zai_auto`，需 UI 手动切 |
+| **WorkBuddy**（Windows 桌面） | `~/.workbuddy/models.json` | 条目 `hy4-flash-sq-128`，声明 tool call/images/reasoning；`maxInputTokens 327680`（2026-11-26 由 262144 上调）、`maxOutputTokens 65536` |
+| **AutoClaw2**（Windows 桌面） | `AppData/Roaming/AutoClaw-official/accounts/<id>/runtime/runtime.sqlite` | 自定义连接已改 hy4-flash-sq-128，`context_window 327680`（2026-11-26 由 262144 上调）；`active=0`，默认走官方 `zai_auto`，需 UI 手动切 |
 
 **选型**：编码用 opencode、通用 agent 用 WorkBuddy，都能接同一端点，非二选一。WorkBuddy 走公网隧道（~1 Mbps），大上下文/图片交互慢，局域网直连快得多。
 
