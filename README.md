@@ -2,13 +2,13 @@
 
 > 本仓库是 **Tencent Hy4-Flash SQ-128** 在 AMD Ryzen AI Max+ 395（Strix Halo / gfx1151 / 128GB 统一内存）上的**专属资料库**。总纲 `AI-MAX-395` 只留基线摘要，详细机制、压测、排障过程全部归这里。
 >
-> 建立 2026-11-24。引擎 `strata-hy4` 0.1.67，256k 上下文，已正式投产（替代删除的 Flash-Next）。
+> 建立 2026-11-24。引擎 `strata-hy4` 0.1.67，**320k** 上下文（原生上限 1M，受 128 GB 内存约束），已正式投产（替代删除的 Flash-Next）。
 
 ---
 
 ## 1. 一句话状态
 
-**生产主力**：hy4flash SQ-128 @ 256k，DFly2 草稿加速 + `HY4_KV_HOST=1` + SSD convcache；systemd `strata.service` 固化，`qie_ai strata` 管理；编程 6/6、TG 26–30 t/s、多轮 cache 复用 471× 加速。
+**生产主力**：hy4flash SQ-128 @ **320k**，DFly2 草稿加速 + `HY4_KV_HOST=1` + SSD convcache；systemd `strata.service` 固化，`qie_ai strata` 管理；编程 6/6、TG 26–30 t/s、多轮 cache 复用 471× 加速。
 
 ---
 
@@ -29,9 +29,10 @@
 - 升级 0.1.66→0.1.67 的过程：CLI 下载卡在 96MB 引擎包（GitHub 时通时不通），最终手动 `curl -C -` 断点续传补完 CLI 的 `.part`（sha256 `b16d89d5...` 校验通过）→ 解压到引擎目录 → CLI 识别。
 - **DFly2 草稿加速在用**：config `drafting: dfly2`，引擎日志 `[spec]` 活跃，accepted ~2.7 drafts/step、tree_steps 20+。
 
-### 2.3 选型：SQ-128 + 256k
-- SQ-128（182.2 GB）KL 0.088 最接近原模型；256k 是训练长度（512k/1M 要 rope scaling 外推，官方警告可靠性下降）。
-- 用户判据：「比 27B 快、智商打平就是大赚」「**能复用 cache 才是王道**」——256k 下混注意力 KV 仅 ~3.5GB，内存余量足以开 convcache。
+### 2.3 选型：SQ-128 + 320k
+- SQ-128（113.65 GB 权重 + 67.58 GB Engram + 0.93 GB Vision）KL 0.088 最接近原模型。
+- **上下文上限订正（2026-11-26）**：权重 manifest 的 `max_position_embeddings` 是 **1048576（原生 1M）**，不是 262144——早期"256k 是训练长度、1M 需 rope scaling 外推"的判断有误；Hy4 引擎也不接受 `--rope-scaling`（那是 Flash-Next 的参数）。真正的约束是内存，不是模型能力。
+- 用户判据：「比 27B 快、智商打平就是大赚」「**能复用 cache 才是王道**」——混注意力 KV 很小（256k 时 `kv cache` 仅 3.92 GB），内存余量足以开 convcache。
 
 ---
 
@@ -64,6 +65,19 @@
 
 **结论**：host KV 几乎不拖慢生成（TG 与 128k 持平）；prefill 线性增长但吞吐稳定；21 万 token 后理解正常。
 
+### 3.5 从 256k 扩到 320k（2026-11-26）
+
+**内存账**（引擎 `[plan]` 实测；KV 按 `--max-context` 全量预分配）：
+
+| ctx | buffers | KV+idx | 实际 `kv cache` | reserve |
+|---|---|---|---|---|
+| 262144 | 4.27 GB | 5.44 GB | 3.92 GB | — |
+| **327680** | **4.80 GB** | **6.80 GB** | **4.83 GB** | **6.76 GiB** |
+
+12 层 sparse MLA KV 各 0.30 GB 常驻 pinned host memory（`HY4_KV_HOST=1`），实测远小于按 34.7 KB/token 的保守估算。**每 +64K ≈ +1.89 GB**：384K 后 reserve 仅 ~5 GiB、448K 起 <3.2 GiB，不建议硬拉；更长的正路是换 SQ-96（footprint 89.43 GB，省 23.6 GB，可上 512K，代价平均位宽 5.7→4.5 bit）。page cache 由内核管理，不手动 drop（`available` 已含可回收部分）。
+
+**为什么需要**：长上下文 agent 的 prompt 中位 **143K**、峰值 **298–303K**，262144 会截断。成本结构不对称：`session-reuse` 命中时 298K prefill 仅 **23 s（12,966 tok/s）**，冷读 143K 需 **232 s（~617 tok/s）**。
+
 ---
 
 ## 4. 多轮 cache 复用：convcache 机制与排障全过程
@@ -79,8 +93,9 @@
 ### 4.2 convcache 机制（`~/Strata/engine/src/hy4flash/run/hy4_convcache.h`）
 - **本质**：SSD 会话缓存——把驻留序列的 KV / SWA-ring / IndexPool 快照 park 成磁盘文件（`H4CC0001` 格式，512B header），另一 prompt 占 GPU 时换出，原对话回来时 restore；支持回退到公共前缀（live + prompt-end 两套 ring 快照，`rewind up to 8160 tokens`）。
 - **关键副作用**：源码 `reuse = session_reuse || cc.on`——**开了 convcache 才启用复用判断链**。
-- 参数默认：`--conversation-cache-dir`（空=off）、`--conversation-cache-gib 40`、`--conversation-cache-min-tokens 64`（实际下限 64）。
-- 空间账：一条 87 token 对话 park 成 **0.60 GB** 文件（SWA ring 快照固定开销大），40 GiB ≈ 66 条短对话；长条目会很大。
+- 参数：`--conversation-cache-dir`（空=off）、`--conversation-cache-gib`、`--conversation-cache-min-tokens`。**当前生产值 240 GiB / 2048**（演进：40 GiB/64 → 120 GiB/2048 → 240 GiB/2048，2026-11-26）。
+- 空间账：一条 87 token 对话 park 成 **0.60 GB** 文件（SWA ring 快照固定开销大），40 GiB ≈ 66 条短对话；长条目更大（303K tokens 的会话 park 后 6.89 GB）。
+- 命中率实测：120 GiB 时 13h **0 drop** / 命中 21.7%；18h 跑满后 12 drop / 全会话 14.2%（淘汰的是旧会话，非配置过小）；240 GiB 后 2h 内 34 parked / 123.33 GiB。
 - live session 优先：同对话连续追问时会话还在 GPU，直接 RESUME（不落盘，最快）；多对话交替才 park。
 
 ### 4.3 排障全过程（为什么 `session-reuse 1` 单开没用）
@@ -151,10 +166,10 @@ StandardError=append:/home/zxw/logs/strata/run.log
 exe: /home/zxw/.local/share/strata/components/shapes/hy4/engine/0.1.67-linux-x86_64-hip-halo/strata-hy4
 args: --native ~/models/strata-hy4/Hy4-Flash-SQ-128.strata
       --engram ~/models/strata-hy4/Hy4-Flash-Engram-Q8.strata
-      --max-context 262144 --session-reuse 1
+      --max-context 327680 --session-reuse 1
       --vision ~/models/strata-hy4/Hy4-Flash-Vision.strata
       --conversation-cache-dir ~/models/strata-hy4/convcache-prod
-      --conversation-cache-gib 40 --conversation-cache-min-tokens 64
+      --conversation-cache-gib 240 --conversation-cache-min-tokens 2048
 model_name: hy4-flash-sq-128, port: 8080, drafting: dfly2
 ```
 
@@ -173,8 +188,8 @@ serve 层传旧 Flash-Next 名直接 `model_not_found`；必须传 **`hy4-flash-
 
 | 客户端 | 配置位置 | 状态 |
 |---|---|---|
-| **opencode**（WSL，v1.19.6） | `~/.config/opencode/opencode.jsonc` | 模型 `local-llm/hy4-flash-sq-128`；默认仍 27B，需手动切 |
-| **WorkBuddy**（Windows 桌面） | `~/.workbuddy/models.json` | 条目 `hy4-flash-sq-128`，声明 tool call/images/reasoning/context 262144 |
+| **opencode**（WSL，v1.19.6） | `~/.config/opencode/opencode.jsonc` | 模型 `local-llm/hy4-flash-sq-128`，`limit.context 327680`；默认仍 27B，需手动切 |
+| **WorkBuddy**（Windows 桌面） | `~/.workbuddy/models.json` | 条目 `hy4-flash-sq-128`，声明 tool call/images/reasoning；context 仍 262144（未同步 320k） |
 | **AutoClaw2**（Windows 桌面） | `AppData/Roaming/AutoClaw-official/accounts/<id>/runtime/runtime.sqlite` | 自定义连接已改 hy4-flash-sq-128，但 `active=0`，默认走官方 `zai_auto`，需 UI 手动切 |
 
 **选型**：编码用 opencode、通用 agent 用 WorkBuddy，都能接同一端点，非二选一。WorkBuddy 走公网隧道（~1 Mbps），大上下文/图片交互慢，局域网直连快得多。
