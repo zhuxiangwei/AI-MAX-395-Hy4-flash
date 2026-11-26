@@ -78,6 +78,9 @@
 
 **为什么需要**：长上下文 agent 的 prompt 中位 **143K**、峰值 **298–303K**，262144 会截断。成本结构不对称：`session-reuse` 命中时 298K prefill 仅 **23 s（12,966 tok/s）**，冷读 143K 需 **232 s（~617 tok/s）**。
 
+- **视觉实测（2026-11-26 18:30）**：config `args` 含 `--vision ~/models/strata-hy4/Hy4-Flash-Vision.strata`，`/v1/models` 的 `architecture.input_modalities` 为 `["text","image"]`。两张合成图探针均判对——正样本 320×240（红三角 1／蓝圆 1／三条黑条，13.8 s、prompt 42 tok）、负样本 240×240（绿竖条 5／紫方块 1，21.7 s、prompt 45 tok）⇒ 真读图、非模板应答。单图仅 ~45 prompt tokens（下采样很重），小字/细粒度识别精度未验。
+- **⚠️ 重载会拖死整机（2026-11-26 18:28 实测）**：`systemctl --user restart strata` 时旧引擎释放 113 GB 与新引擎立即分配相撞，内存见底——SSH 被拖断、整机停滞约 6 分钟，最终 `sudo reboot` 恢复（18:35 开机自启 → 18:41 READY）。**改 config 后重载应先 `stop`、等 `free -g` 的 available 回升再 `start`**；冷启动（开机自启）无此问题。
+
 ---
 
 ## 4. 多轮 cache 复用：convcache 机制与排障全过程
@@ -144,7 +147,7 @@ metrics：`requests_reused=1, reused_tokens=18996`。
 ### 6.1 启动方式
 CLI `strata launch` **不可用**：① 不透传 `HY4_KV_HOST` → 256k OOM ② 触发引擎更新检查。必须 serve + config。
 
-> ⚠️ **config 必备字段 `api_key`（2026-11-25 教训）**：生产 config `hy4-256k-067-convcache.json` 必须带 `api_key`（与 llamacpp 的 `--api-key` 同一个 token，本仓库不存明文）。缺此项时 Strata 的 DNS rebinding 防护会对云端域名返回 `403 Host '<your-domain>' is not allowed`，公网端点全挂；设了 `api_key` 会同时关闭该 host 检查。11-24 换 config 时漏带 → WorkBuddy/OpenCode 经公网全部 403，补回重启后恢复。**换 config 时逐项核对 `api_key`**；本机无 key 401 / 有 key 200 是验收基线。
+> ⚠️ **config 必备字段 `api_key`（2026-11-25 教训）**：生产 config `hy4-320k-067-convcache.json` 必须带 `api_key`（与 llamacpp 的 `--api-key` 同一个 token，本仓库不存明文）。缺此项时 Strata 的 DNS rebinding 防护会对云端域名返回 `403 Host '<your-domain>' is not allowed`，公网端点全挂；设了 `api_key` 会同时关闭该 host 检查。11-24 换 config 时漏带 → WorkBuddy/OpenCode 经公网全部 403，补回重启后恢复。**换 config 时逐项核对 `api_key`**；本机无 key 401 / 有 key 200 是验收基线。
 
 **strata.service（已固化，qie_ai strata 直接管理）**：
 ```
@@ -154,14 +157,14 @@ Environment=HY4_KV_HOST=1
 ExecStartPre=/bin/bash /home/zxw/scripts/rocm-wait-devices.sh 90
 ExecStartPre=-/bin/bash -c 'p=$(ss -ltnp 2>/dev/null | grep ":8080" | grep -oE "pid=[0-9]+" | cut -d= -f2 | head -1); [ -n "$p" ] && kill $p && sleep 4 || true'
 ExecStart=/home/zxw/Strata/.venv/bin/python /home/zxw/Strata/terminal/serve/server.py \
-  --engine strata --config /home/zxw/Strata/terminal/hy4-256k-067-convcache.json --port 8080
+  --engine strata --config /home/zxw/Strata/terminal/hy4-320k-067-convcache.json --port 8080
 Restart=on-failure
 RestartSec=15
 StandardOutput=append:/home/zxw/logs/strata/run.log
 StandardError=append:/home/zxw/logs/strata/run.log
 ```
 
-**run config**（`~/Strata/terminal/hy4-256k-067-convcache.json`，真源在推理机）：
+**run config**（`~/Strata/terminal/hy4-320k-067-convcache.json`，真源在推理机）：
 ```
 exe: /home/zxw/.local/share/strata/components/shapes/hy4/engine/0.1.67-linux-x86_64-hip-halo/strata-hy4
 args: --native ~/models/strata-hy4/Hy4-Flash-SQ-128.strata
@@ -174,7 +177,7 @@ model_name: hy4-flash-sq-128, port: 8080, drafting: dfly2
 ```
 
 ### 6.2 日志
-- server.py 侧 `~/logs/strata/run.log`；引擎全量 `~/.local/state/strata/launch/sq-128-256k.engine.log`（config `log` 字段）。
+- server.py 侧 `~/logs/strata/run.log`；引擎全量 `~/.local/state/strata/launch/sq-128-320k.engine.log`（config `log` 字段）。
 - 两者均纳入 logrotate（`logrotate-strata`：daily/rotate 14/copytruncate），user 级 `logrotate.timer` 每日 00:10。引擎日志的轮转规则是 2026-11-24 补的（此前是盲区）。
 
 ### 6.3 模型名严格校验
