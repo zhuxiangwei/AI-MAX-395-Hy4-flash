@@ -1,5 +1,5 @@
 [Unit]
-Description=Strata server (Hy4-Flash SQ-128 @ 256k, HY4_KV_HOST + SSD conversation cache)
+Description=Strata server (Hy4-Flash SQ-128 @ 320k, HY4_KV_HOST + SSD conversation cache)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -11,7 +11,7 @@ Environment=LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/core-7.14/lib
 Environment=HY4_KV_HOST=1
 ExecStartPre=/bin/bash /home/zxw/scripts/rocm-wait-devices.sh 90
 ExecStartPre=-/bin/bash -c 'p=$(ss -ltnp 2>/dev/null | grep ":8080" | grep -oE "pid=[0-9]+" | cut -d= -f2 | head -1); [ -n "$p" ] && kill $p && sleep 4 || true'
-ExecStart=/home/zxw/Strata/.venv/bin/python /home/zxw/Strata/terminal/serve/server.py --engine strata --config /home/zxw/Strata/terminal/hy4-256k-067-convcache.json --port 8080
+ExecStart=/home/zxw/Strata/.venv/bin/python /home/zxw/Strata/terminal/serve/server.py --engine strata --config /home/zxw/Strata/terminal/hy4-320k-067-convcache.json --port 8080
 Restart=on-failure
 RestartSec=15
 StandardOutput=append:/home/zxw/logs/strata/run.log
